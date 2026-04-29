@@ -1,0 +1,12 @@
+.DS_Store
+*.o
+*.elf
+*.eep
+*.lss
+*.map
+*.sym
+_compile/
+build/
+
+gbamidi/
+Arduinoboy-ProMicroGal-master/
