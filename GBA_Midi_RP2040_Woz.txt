@@ -4,6 +4,15 @@
   Goal: Stable RP2040-first multiboot uploader for Spritesmods GBA MIDI ROM,
   then USB/DIN MIDI forwarding after the GBA runtime is loaded.
 
+  Attribution:
+  - Based on and adapted from the SpritesMods GBA MIDI project by
+    Jeroen Domburg / Sprite_tm.
+  - Original article: https://spritesmods.com/?art=gbamidi
+
+  License:
+  - This adaptation is released under Creative Commons Attribution 2.0
+    Generic (CC-BY-2.0). See LICENSE.md.
+
   Key design choices:
   - Direct GPIO register operations for deterministic edge timing.
   - Cycle-based waits (busy_wait_at_least_cycles) instead of microsecond timers.

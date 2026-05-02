@@ -2,6 +2,16 @@
 
 RP2040/Arduino sketch for uploading an embedded GBA MIDI multiboot ROM, then forwarding USB/DIN MIDI to the running GBA program.
 
+This project is based on and adapted from the SpritesMods GBA MIDI project by Jeroen Domburg / Sprite_tm:
+
+https://spritesmods.com/?art=gbamidi
+
+## License
+
+This repository is licensed under Creative Commons Attribution 2.0 Generic (`CC-BY-2.0`). See `LICENSE.md`.
+
+Please preserve attribution to SpritesMods for the original GBA MIDI concept, protocol work, and ROM behavior this adaptation builds on.
+
 ## Main Sketch
 
 - `GBA_Midi_RP2040_Woz.txt` is the current working RP2040 sketch.
