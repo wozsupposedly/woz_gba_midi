@@ -14,7 +14,7 @@ Please preserve attribution to SpritesMods for the original GBA MIDI concept, pr
 
 ## Main Sketch
 
-- `GBA_Midi_RP2040_Woz.txt` is the current working RP2040 sketch.
+- `GBA_Midi_RP2040_Woz.ino` is the current working RP2040 sketch.
 - It uploads the embedded GBA MIDI ROM over the GBA link port, then switches to MIDI forwarding after the ROM upload succeeds.
 - Current working cable profiles:
   - Profile A: `SC=GPIO2`, `SI=GPIO3`, `SD=GPIO4`

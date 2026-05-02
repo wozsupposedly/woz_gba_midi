@@ -1,5 +1,5 @@
 /*
-  GBA_Midi_RP2040_Woz.txt
+  GBA_Midi_RP2040_Woz.ino
 
   Goal: Stable RP2040-first multiboot uploader for Spritesmods GBA MIDI ROM,
   then USB/DIN MIDI forwarding after the GBA runtime is loaded.
