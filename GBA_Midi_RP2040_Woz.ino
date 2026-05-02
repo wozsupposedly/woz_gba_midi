@@ -20,8 +20,37 @@
   - Embedded gbamidi.gba payload in flash, retried until upload succeeds.
   - USB MIDI and DIN MIDI stay idle until the ROM upload reports success.
 
-  Voltage/domain note:
-  - RP2040 is 3.3V logic. Use proper wiring/level handling to the GBA link port.
+ *   RP2040 / Arduino-Pico pin settings:                                   *
+ *     - USB MIDI host D+ to 22ohm resistor to GPIO pin 14                 *
+ *     - USB MIDI host D- to 22ohm resistor to GPIO pin 15                 * 
+ *     - USB MIDI host port requires 5V VBUS power, and two 15k resistors  *
+ *     one from D+ to ground, and another from D- to ground.               * 
+ *                                                                         *
+ *     -IMPORTANT set CPU Speed: "240 MHz (Overclock)"                     *
+ *     -NOTE use a ground wire to the usb host thicker than 30awg.         *
+ *     -Twist D+ and D-, try to keep them short.                           *
+ *     -The 22ohm resistors go near the RP2040.                            *
+ *                                                                         *
+ *   RP2040 built-in USB works as a USB MIDI device.                       *
+ *   RP2040 GPIO14/GPIO15 port works as a USB MIDI host.                   *
+
+  Profile A: GBC
+  - SC -> GPIO2
+  - SI -> GPIO3
+  - SD -> GPIO4
+
+  Profile B: GBA
+  - SC -> GPIO2
+  - SI -> GPIO3
+  - SD -> GPIO5
+
+  - G -> Ground
+
+ 3 4
+ 5 G
+ G 2
+<--socket, port left (pins toward you)
+
 */
 
 #include <Arduino.h>
