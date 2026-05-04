@@ -1,6 +1,6 @@
 # Woz GBA MIDI
 
-RP2040/Arduino sketch for uploading an embedded GBA MIDI multiboot ROM, then forwarding USB/DIN MIDI to the running GBA program.
+RP2040/Arduino sketch for uploading an embedded GBA MIDI multiboot ROM, then forwarding USB device MIDI, USB host MIDI, and DIN MIDI to the running GBA program.
 
 This project is based on and adapted from the SpritesMods GBA MIDI project by Jeroen Domburg / Sprite_tm:
 
@@ -16,10 +16,20 @@ Please preserve attribution to SpritesMods for the original GBA MIDI concept, pr
 
 - `GBA_Midi_RP2040_Woz.ino` is the current working RP2040 sketch.
 - It uploads the embedded GBA MIDI ROM over the GBA link port, then switches to MIDI forwarding after the ROM upload succeeds.
+- Built-in USB enumerates as a USB MIDI device.
+- GPIO14/GPIO15 work as a PIO USB MIDI host port for class-compliant USB MIDI controllers.
 - Current working cable profiles:
   - Profile A: `SC=GPIO2`, `SI=GPIO3`, `SD=GPIO4`
   - Profile B: `SC=GPIO2`, `SI=GPIO3`, `SD=GPIO5`
 - The sketch tries Profile A first, then Profile B, and only enters MIDI mode after a full ROM upload succeeds.
+
+## USB Host Wiring
+
+- `GPIO14` = USB host `D+` through a `22 ohm` series resistor.
+- `GPIO15` = USB host `D-` through a `22 ohm` series resistor.
+- Provide external `5V VBUS` to the hosted USB connector.
+- Add `15k` pulldown from `D+` to ground and another `15k` pulldown from `D-` to ground.
+- Use Arduino-Pico with `USB Stack: Adafruit TinyUSB` and `CPU Speed: 240 MHz (Overclock)`.
 
 ## Other Files
 
