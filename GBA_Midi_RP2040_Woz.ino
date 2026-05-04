@@ -1661,6 +1661,9 @@ void serviceMultiboot() {
     gbaRuntimeReady = true;
     blinkSuccess();
     delay(3000);  // same settle delay as original
+
+    // Start PIO USB host only after multiboot succeeds so it cannot disturb ROM upload timing.
+    usbHostStartRequested = true;
     return;
   }
 
@@ -1887,9 +1890,6 @@ void setup() {
 
   selectGbaCableProfile(nextCableProfile);
   gbaSerInitPins();
-
-  // Matches the working Arduinoboy ordering: start the PIO USB host after USB device, DIN, and GPIO setup.
-  usbHostStartRequested = true;
 
   // Let GBA fully boot to BIOS logo before first attempt.
   delay(2000);
