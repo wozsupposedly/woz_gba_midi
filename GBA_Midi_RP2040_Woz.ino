@@ -1,7 +1,7 @@
 /*
   GBA_Midi_RP2040_Woz.ino
 
-  Goal: Stable RP2040-first multiboot uploader for Spritesmods GBA MIDI ROM,
+  Goal: Stable RP2040-first multiboot uploader for a GBA MIDI ROM,
   then USB/DIN MIDI forwarding after the GBA runtime is loaded.
 
   Attribution:
@@ -88,6 +88,7 @@ constexpr uint8_t PIN_USB_HOST_DM = 15;
 constexpr uint8_t PIN_USB_HOST_VBUS_EN = 255;  // Set to a GPIO if your board switches host 5V VBUS.
 constexpr uint8_t USB_HOST_MIDI_QUEUE_SIZE = 128;
 constexpr uint8_t MAX_USB_HOST_MIDI_DEVICES = 8;
+constexpr uint32_t USB_HOST_START_DELAY_MS = 8000;
 
 // ---------------- Upload behavior ----------------
 constexpr uint32_t MULTIBOOT_RETRY_MS = 1000;
@@ -1310,6 +1311,8 @@ static bool gbaRuntimeReady = false;
 Adafruit_USBD_MIDI usb_midi;
 Adafruit_USBH_Host USBHost;
 static volatile bool usbHostStartRequested = false;
+static bool usbHostStartQueued = false;
+static uint32_t usbHostStartAfterMs = 0;
 static volatile uint8_t usbHostMidiHead = 0;
 static volatile uint8_t usbHostMidiTail = 0;
 static uint8_t usbHostMidiQueue[USB_HOST_MIDI_QUEUE_SIZE];
@@ -1662,8 +1665,9 @@ void serviceMultiboot() {
     blinkSuccess();
     delay(3000);  // same settle delay as original
 
-    // Start PIO USB host only after multiboot succeeds so it cannot disturb ROM upload timing.
-    usbHostStartRequested = true;
+    // Queue host start after normal MIDI mode has had time to settle.
+    usbHostStartQueued = true;
+    usbHostStartAfterMs = millis() + USB_HOST_START_DELAY_MS;
     return;
   }
 
@@ -1747,7 +1751,23 @@ bool usbHostMidiEnqueuePacket(const uint8_t packet[4]) {
   return ok;
 }
 
+void serviceUsbHostStart() {
+  if (!usbHostStartQueued || usbHostStartRequested) {
+    return;
+  }
+  if (static_cast<int32_t>(millis() - usbHostStartAfterMs) < 0) {
+    return;
+  }
+
+  usbHostStartRequested = true;
+}
+
 void serviceUsbHostMidi() {
+  serviceUsbHostStart();
+  if (!usbHostStartRequested) {
+    return;
+  }
+
   uint8_t b = 0;
   while (usbHostMidiDequeueByte(&b)) {
     forwardMidiByteToGba(b);
@@ -1876,8 +1896,11 @@ void setup() {
   if (!TinyUSBDevice.isInitialized()) {
     TinyUSBDevice.begin(0);
   }
+  TinyUSBDevice.setManufacturerDescriptor("Woz");
+  TinyUSBDevice.setProductDescriptor("GBA MIDI Woz");
   usb_midi.setStringDescriptor("GBA MIDI Woz");
   usb_midi.begin();
+  Serial.begin(115200);  // Required by Arduino-Pico when using the TinyUSB stack with TinyUSB.
   if (TinyUSBDevice.mounted()) {
     TinyUSBDevice.detach();
     delay(10);
