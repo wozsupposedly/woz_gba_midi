@@ -98,6 +98,7 @@ constexpr uint8_t GBA_CABLE_ATTEMPTS_BEFORE_SWITCH = 1;
 // ---------------- MIDI behavior ----------------
 constexpr bool USB_TO_DIN_THRU = true;
 constexpr bool DIN_TO_USB_THRU = true;
+constexpr bool ENABLE_USB_HOST_MIDI = false;  // PIO USB host currently breaks USB device MIDI after USBHost.begin().
 constexpr bool USB_HOST_TO_DIN_THRU = true;
 constexpr bool USB_HOST_TO_USB_DEVICE_THRU = false;
 
@@ -1669,9 +1670,11 @@ void serviceMultiboot() {
     blinkSuccess();
     delay(3000);  // same settle delay as original
 
-    // Queue host start after normal MIDI mode has had time to settle.
-    usbHostStartQueued = true;
-    usbHostStartAfterMs = millis() + USB_HOST_START_DELAY_MS;
+    if (ENABLE_USB_HOST_MIDI) {
+      // Queue host start after normal MIDI mode has had time to settle.
+      usbHostStartQueued = true;
+      usbHostStartAfterMs = millis() + USB_HOST_START_DELAY_MS;
+    }
     return;
   }
 
