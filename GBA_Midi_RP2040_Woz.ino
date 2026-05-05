@@ -1,7 +1,7 @@
 /*
   GBA_Midi_RP2040_Woz.ino
 
-  Goal: Stable RP2040-first multiboot uploader for a GBA MIDI ROM,
+  Goal: Stable RP2040-first multiboot uploader for Spritesmods GBA MIDI ROM,
   then USB/DIN MIDI forwarding after the GBA runtime is loaded.
 
   Attribution:
@@ -55,17 +55,10 @@
 
 #include <Arduino.h>
 #include <Adafruit_TinyUSB.h>
-#include <hardware/clocks.h>
 #include <hardware/gpio.h>
 #include <hardware/structs/sio.h>
 #include <pico/platform.h>
 #include <pico/time.h>
-#include "pio_usb_configuration.h"
-#include "pio_usb.h"
-
-#if defined(F_CPU) && (F_CPU != 120000000UL) && (F_CPU != 240000000UL)
-#error "RP2040 PIO USB host requires Arduino-Pico CPU Speed set to 120 MHz or 240 MHz. Use 240 MHz for this sketch."
-#endif
 
 // ---------------- RP2040 pin map (change if needed) ----------------
 // GBA signal names are from the GBA side.
@@ -82,14 +75,6 @@ constexpr uint8_t PIN_DIN_MIDI_TX = 0;
 constexpr uint8_t PIN_DIN_MIDI_RX = 1;
 constexpr uint32_t DIN_MIDI_BAUD = 31250;
 
-// PIO USB MIDI host. GPIO15 is the matching D- pin when D+ is GPIO14.
-constexpr uint8_t PIN_USB_HOST_DP = 14;
-constexpr uint8_t PIN_USB_HOST_DM = 15;
-constexpr uint8_t PIN_USB_HOST_VBUS_EN = 255;  // Set to a GPIO if your board switches host 5V VBUS.
-constexpr uint8_t USB_HOST_MIDI_QUEUE_SIZE = 128;
-constexpr uint8_t MAX_USB_HOST_MIDI_DEVICES = 8;
-constexpr uint32_t USB_HOST_START_DELAY_MS = 8000;
-
 // ---------------- Upload behavior ----------------
 constexpr uint32_t MULTIBOOT_RETRY_MS = 1000;
 constexpr uint32_t GBA_WORD_TIMEOUT_US = 20000;
@@ -98,9 +83,6 @@ constexpr uint8_t GBA_CABLE_ATTEMPTS_BEFORE_SWITCH = 1;
 // ---------------- MIDI behavior ----------------
 constexpr bool USB_TO_DIN_THRU = true;
 constexpr bool DIN_TO_USB_THRU = true;
-constexpr bool ENABLE_USB_HOST_MIDI = false;  // PIO USB host currently breaks USB device MIDI after USBHost.begin().
-constexpr bool USB_HOST_TO_DIN_THRU = true;
-constexpr bool USB_HOST_TO_USB_DEVICE_THRU = false;
 
 // Original AVR used (F_CPU / 115200) - 16 because its GPIO/timer code had
 // measured AVR-specific overhead. RP2040 direct GPIO uses an accurate cycle
@@ -1310,31 +1292,12 @@ constexpr uint32_t GBA_ORIGINAL_SEND_LEN = 14UL * 1024UL;
 static uint32_t lastAttemptMs = 0;
 static bool gbaRuntimeReady = false;
 Adafruit_USBD_MIDI usb_midi;
-Adafruit_USBH_Host USBHost;
-static volatile bool usbHostStartRequested = false;
-static bool usbHostStartQueued = false;
-static uint32_t usbHostStartAfterMs = 0;
-static volatile uint8_t usbHostMidiHead = 0;
-static volatile uint8_t usbHostMidiTail = 0;
-static uint8_t usbHostMidiQueue[USB_HOST_MIDI_QUEUE_SIZE];
-static uint8_t usbDeviceTxStatus = 0;
-static uint8_t usbDeviceTxData[2] = {0, 0};
-static uint8_t usbDeviceTxNeeded = 0;
-static uint8_t usbDeviceTxCount = 0;
 static uint8_t activeCableProfile = 0;
 static uint8_t nextCableProfile = 0;
 static uint8_t cableAttemptsOnThisProfile = 0;
 static uint8_t gbaPinSC = PIN_GBA_SC_FIXED;
 static uint8_t gbaPinSD = PIN_GBA_SD_CABLE_A;
 static uint8_t gbaPinSI = PIN_GBA_SI_FIXED;
-
-struct UsbHostMidiDevice {
-  bool mounted;
-  uint8_t idx;
-  uint8_t rxCableCount;
-};
-
-static UsbHostMidiDevice usbHostMidiDevices[MAX_USB_HOST_MIDI_DEVICES];
 
 // ---------------- Low-level helpers ----------------
 static inline uint32_t pinMask(uint8_t pin) {
@@ -1669,12 +1632,6 @@ void serviceMultiboot() {
     gbaRuntimeReady = true;
     blinkSuccess();
     delay(3000);  // same settle delay as original
-
-    if (ENABLE_USB_HOST_MIDI) {
-      // Queue host start after normal MIDI mode has had time to settle.
-      usbHostStartQueued = true;
-      usbHostStartAfterMs = millis() + USB_HOST_START_DELAY_MS;
-    }
     return;
   }
 
@@ -1694,299 +1651,17 @@ void forwardMidiByteToGba(uint8_t b) {
   gbaSerTxWord(static_cast<uint16_t>(b));
 }
 
-uint8_t usbMidiCinPayloadSize(uint8_t cin) {
-  switch (cin) {
-    case 0x5:
-    case 0xF:
-      return 1;
-    case 0x2:
-    case 0x6:
-    case 0xC:
-    case 0xD:
-      return 2;
-    case 0x3:
-    case 0x4:
-    case 0x7:
-    case 0x8:
-    case 0x9:
-    case 0xA:
-    case 0xB:
-    case 0xE:
-      return 3;
-    default:
-      return 0;
-  }
-}
-
-bool usbHostMidiEnqueueByte(uint8_t b) {
-  noInterrupts();
-  uint8_t next = static_cast<uint8_t>((usbHostMidiHead + 1) % USB_HOST_MIDI_QUEUE_SIZE);
-  if (next == usbHostMidiTail) {
-    interrupts();
-    return false;
-  }
-
-  usbHostMidiQueue[usbHostMidiHead] = b;
-  usbHostMidiHead = next;
-  interrupts();
-  return true;
-}
-
-bool usbHostMidiDequeueByte(uint8_t* b) {
-  noInterrupts();
-  if (usbHostMidiTail == usbHostMidiHead) {
-    interrupts();
-    return false;
-  }
-
-  *b = usbHostMidiQueue[usbHostMidiTail];
-  usbHostMidiTail = static_cast<uint8_t>((usbHostMidiTail + 1) % USB_HOST_MIDI_QUEUE_SIZE);
-  interrupts();
-  return true;
-}
-
-bool usbHostMidiEnqueuePacket(const uint8_t packet[4]) {
-  uint8_t len = usbMidiCinPayloadSize(packet[0] & 0x0F);
-  if (len == 0) {
-    return false;
-  }
-
-  bool ok = true;
-  for (uint8_t i = 0; i < len; i++) {
-    ok = usbHostMidiEnqueueByte(packet[1 + i]) && ok;
-  }
-  return ok;
-}
-
-void serviceUsbHostStart() {
-  if (!usbHostStartQueued || usbHostStartRequested) {
-    return;
-  }
-  if (static_cast<int32_t>(millis() - usbHostStartAfterMs) < 0) {
-    return;
-  }
-
-  usbHostStartRequested = true;
-}
-
-void serviceUsbHostMidi() {
-  serviceUsbHostStart();
-  if (!usbHostStartRequested) {
-    return;
-  }
-
-  uint8_t b = 0;
-  while (usbHostMidiDequeueByte(&b)) {
-    forwardMidiByteToGba(b);
-    if (USB_HOST_TO_DIN_THRU) {
-      Serial1.write(b);
-    }
-    if (USB_HOST_TO_USB_DEVICE_THRU) {
-      usbDeviceWriteMidiByte(b);
-    }
-  }
-}
-
-void setupUsbHost() {
-  uint32_t sysClock = clock_get_hz(clk_sys);
-  if (sysClock != 120000000UL && sysClock != 240000000UL) {
-    return;
-  }
-
-  pio_usb_configuration_t pioCfg = PIO_USB_DEFAULT_CONFIG;
-  pioCfg.pin_dp = PIN_USB_HOST_DP;
-  USBHost.configure_pio_usb(1, &pioCfg);
-
-  if (PIN_USB_HOST_VBUS_EN != 255) {
-    pinMode(PIN_USB_HOST_VBUS_EN, OUTPUT);
-    digitalWrite(PIN_USB_HOST_VBUS_EN, HIGH);
-  }
-}
-
-void setup1() {
-  while (!usbHostStartRequested) {
-    delay(1);
-  }
-
-  setupUsbHost();
-  uint32_t sysClock = clock_get_hz(clk_sys);
-  if (sysClock == 120000000UL || sysClock == 240000000UL) {
-    USBHost.begin(1);
-  }
-}
-
-void loop1() {
-  if (!usbHostStartRequested) {
-    delay(1);
-    return;
-  }
-
-  USBHost.task();
-
-  uint8_t packet[4];
-  for (uint8_t i = 0; i < MAX_USB_HOST_MIDI_DEVICES; i++) {
-    if (!usbHostMidiDevices[i].mounted || usbHostMidiDevices[i].rxCableCount == 0) {
-      continue;
-    }
-    while (tuh_midi_read_available(usbHostMidiDevices[i].idx) >= 4 &&
-           tuh_midi_packet_read(usbHostMidiDevices[i].idx, packet)) {
-      usbHostMidiEnqueuePacket(packet);
-    }
-  }
-}
-
-void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t* mount_cb_data) {
-  for (uint8_t i = 0; i < MAX_USB_HOST_MIDI_DEVICES; i++) {
-    if (!usbHostMidiDevices[i].mounted) {
-      usbHostMidiDevices[i].mounted = true;
-      usbHostMidiDevices[i].idx = idx;
-      usbHostMidiDevices[i].rxCableCount = mount_cb_data->rx_cable_count;
-      break;
-    }
-  }
-}
-
-void tuh_midi_umount_cb(uint8_t idx) {
-  for (uint8_t i = 0; i < MAX_USB_HOST_MIDI_DEVICES; i++) {
-    if (usbHostMidiDevices[i].mounted && usbHostMidiDevices[i].idx == idx) {
-      usbHostMidiDevices[i] = UsbHostMidiDevice{};
-      break;
-    }
-  }
-}
-
-void tuh_midi_rx_cb(uint8_t idx, uint32_t xferred_bytes) {
-  if (xferred_bytes == 0) {
-    return;
-  }
-
-  uint8_t packet[4];
-  while (tuh_midi_packet_read(idx, packet)) {
-    usbHostMidiEnqueuePacket(packet);
-  }
-}
-
-void tuh_midi_tx_cb(uint8_t idx, uint32_t num_bytes) {
-  (void)idx;
-  (void)num_bytes;
-}
-
-uint8_t usbMidiMessageLength(uint8_t status) {
-  if (status >= 0xF8) {
-    return 1;
-  }
-
-  switch (status & 0xF0) {
-    case 0x80:
-    case 0x90:
-    case 0xA0:
-    case 0xB0:
-    case 0xE0:
-      return 3;
-    case 0xC0:
-    case 0xD0:
-      return 2;
-    case 0xF0:
-      if (status == 0xF1 || status == 0xF3) {
-        return 2;
-      }
-      if (status == 0xF2) {
-        return 3;
-      }
-      if (status == 0xF6) {
-        return 1;
-      }
-      return 0;  // SysEx is packetized separately by USB MIDI and not needed for note input.
-    default:
-      return 0;
-  }
-}
-
-uint8_t usbMidiCodeIndex(uint8_t status, uint8_t length) {
-  if (status >= 0xF8) {
-    return 0x0F;
-  }
-  if ((status & 0xF0) == 0xC0) {
-    return 0x0C;
-  }
-  if ((status & 0xF0) == 0xD0) {
-    return 0x0D;
-  }
-  if ((status & 0xF0) != 0xF0) {
-    return (status & 0xF0) >> 4;
-  }
-  if (length == 1) {
-    return 0x05;
-  }
-  if (length == 2) {
-    return 0x02;
-  }
-  if (length == 3) {
-    return 0x03;
-  }
-  return 0;
-}
-
-void usbDeviceWriteMidiRaw(uint8_t status, uint8_t data1, uint8_t data2, uint8_t length) {
-  uint8_t cin = usbMidiCodeIndex(status, length);
-  if (cin == 0) {
-    return;
-  }
-
-  uint8_t packet[4] = {cin, status, data1, data2};
-  usb_midi.writePacket(packet);
-}
-
-void usbDeviceWriteMidiByte(uint8_t b) {
-  if (b >= 0xF8) {
-    usbDeviceWriteMidiRaw(b, 0, 0, 1);
-    return;
-  }
-
-  if (b & 0x80) {
-    uint8_t len = usbMidiMessageLength(b);
-    if (len == 0) {
-      usbDeviceTxStatus = 0;
-      usbDeviceTxNeeded = 0;
-      usbDeviceTxCount = 0;
-      return;
-    }
-
-    usbDeviceTxStatus = b;
-    usbDeviceTxNeeded = len;
-    usbDeviceTxCount = 0;
-    if (len == 1) {
-      usbDeviceWriteMidiRaw(b, 0, 0, 1);
-    }
-    return;
-  }
-
-  if (usbDeviceTxStatus == 0 || usbDeviceTxNeeded < 2) {
-    return;
-  }
-
-  usbDeviceTxData[usbDeviceTxCount++] = b;
-  if (usbDeviceTxCount >= (usbDeviceTxNeeded - 1)) {
-    usbDeviceWriteMidiRaw(
-      usbDeviceTxStatus,
-      usbDeviceTxData[0],
-      usbDeviceTxNeeded > 2 ? usbDeviceTxData[1] : 0,
-      usbDeviceTxNeeded
-    );
-    usbDeviceTxCount = 0;
-  }
-}
-
 void serviceUsbMidi() {
-  uint8_t packet[4];
-  while (usb_midi.readPacket(packet)) {
-    uint8_t len = usbMidiCinPayloadSize(packet[0] & 0x0F);
-    for (uint8_t i = 0; i < len; i++) {
-      uint8_t b = packet[1 + i];
-      forwardMidiByteToGba(b);
-      if (USB_TO_DIN_THRU) {
-        Serial1.write(b);
-      }
+  while (usb_midi.available() > 0) {
+    int v = usb_midi.read();
+    if (v < 0) {
+      break;
+    }
+
+    uint8_t b = static_cast<uint8_t>(v);
+    forwardMidiByteToGba(b);
+    if (USB_TO_DIN_THRU) {
+      Serial1.write(b);
     }
   }
 }
@@ -1996,7 +1671,7 @@ void serviceDinMidi() {
     uint8_t b = static_cast<uint8_t>(Serial1.read());
     forwardMidiByteToGba(b);
     if (DIN_TO_USB_THRU) {
-      usbDeviceWriteMidiByte(b);
+      usb_midi.write(b);
     }
   }
 }
@@ -2008,11 +1683,10 @@ void setup() {
   if (!TinyUSBDevice.isInitialized()) {
     TinyUSBDevice.begin(0);
   }
-  TinyUSBDevice.setManufacturerDescriptor("Woz");
-  TinyUSBDevice.setProductDescriptor("GBA MIDI Woz");
-  usb_midi.setStringDescriptor("GBA MIDI Woz");
+  TinyUSBDevice.setManufacturerDescriptor("Game Boy Advance");
+  TinyUSBDevice.setProductDescriptor("Game Boy Advance");
+  usb_midi.setStringDescriptor("Game Boy Advance");
   usb_midi.begin();
-  Serial.begin(115200);  // Required by Arduino-Pico when using the TinyUSB stack with TinyUSB.
   if (TinyUSBDevice.mounted()) {
     TinyUSBDevice.detach();
     delay(10);
@@ -2037,6 +1711,5 @@ void loop() {
 
   serviceMultiboot();
   serviceUsbMidi();
-  serviceUsbHostMidi();
   serviceDinMidi();
 }
