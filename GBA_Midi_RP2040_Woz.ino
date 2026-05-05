@@ -1316,6 +1316,10 @@ static uint32_t usbHostStartAfterMs = 0;
 static volatile uint8_t usbHostMidiHead = 0;
 static volatile uint8_t usbHostMidiTail = 0;
 static uint8_t usbHostMidiQueue[USB_HOST_MIDI_QUEUE_SIZE];
+static uint8_t usbDeviceTxStatus = 0;
+static uint8_t usbDeviceTxData[2] = {0, 0};
+static uint8_t usbDeviceTxNeeded = 0;
+static uint8_t usbDeviceTxCount = 0;
 static uint8_t activeCableProfile = 0;
 static uint8_t nextCableProfile = 0;
 static uint8_t cableAttemptsOnThisProfile = 0;
@@ -1775,7 +1779,7 @@ void serviceUsbHostMidi() {
       Serial1.write(b);
     }
     if (USB_HOST_TO_USB_DEVICE_THRU) {
-      usb_midi.write(b);
+      usbDeviceWriteMidiByte(b);
     }
   }
 }
@@ -1864,17 +1868,122 @@ void tuh_midi_tx_cb(uint8_t idx, uint32_t num_bytes) {
   (void)num_bytes;
 }
 
-void serviceUsbMidi() {
-  while (usb_midi.available() > 0) {
-    int v = usb_midi.read();
-    if (v < 0) {
-      break;
+uint8_t usbMidiMessageLength(uint8_t status) {
+  if (status >= 0xF8) {
+    return 1;
+  }
+
+  switch (status & 0xF0) {
+    case 0x80:
+    case 0x90:
+    case 0xA0:
+    case 0xB0:
+    case 0xE0:
+      return 3;
+    case 0xC0:
+    case 0xD0:
+      return 2;
+    case 0xF0:
+      if (status == 0xF1 || status == 0xF3) {
+        return 2;
+      }
+      if (status == 0xF2) {
+        return 3;
+      }
+      if (status == 0xF6) {
+        return 1;
+      }
+      return 0;  // SysEx is packetized separately by USB MIDI and not needed for note input.
+    default:
+      return 0;
+  }
+}
+
+uint8_t usbMidiCodeIndex(uint8_t status, uint8_t length) {
+  if (status >= 0xF8) {
+    return 0x0F;
+  }
+  if ((status & 0xF0) == 0xC0) {
+    return 0x0C;
+  }
+  if ((status & 0xF0) == 0xD0) {
+    return 0x0D;
+  }
+  if ((status & 0xF0) != 0xF0) {
+    return (status & 0xF0) >> 4;
+  }
+  if (length == 1) {
+    return 0x05;
+  }
+  if (length == 2) {
+    return 0x02;
+  }
+  if (length == 3) {
+    return 0x03;
+  }
+  return 0;
+}
+
+void usbDeviceWriteMidiRaw(uint8_t status, uint8_t data1, uint8_t data2, uint8_t length) {
+  uint8_t cin = usbMidiCodeIndex(status, length);
+  if (cin == 0) {
+    return;
+  }
+
+  uint8_t packet[4] = {cin, status, data1, data2};
+  usb_midi.writePacket(packet);
+}
+
+void usbDeviceWriteMidiByte(uint8_t b) {
+  if (b >= 0xF8) {
+    usbDeviceWriteMidiRaw(b, 0, 0, 1);
+    return;
+  }
+
+  if (b & 0x80) {
+    uint8_t len = usbMidiMessageLength(b);
+    if (len == 0) {
+      usbDeviceTxStatus = 0;
+      usbDeviceTxNeeded = 0;
+      usbDeviceTxCount = 0;
+      return;
     }
 
-    uint8_t b = static_cast<uint8_t>(v);
-    forwardMidiByteToGba(b);
-    if (USB_TO_DIN_THRU) {
-      Serial1.write(b);
+    usbDeviceTxStatus = b;
+    usbDeviceTxNeeded = len;
+    usbDeviceTxCount = 0;
+    if (len == 1) {
+      usbDeviceWriteMidiRaw(b, 0, 0, 1);
+    }
+    return;
+  }
+
+  if (usbDeviceTxStatus == 0 || usbDeviceTxNeeded < 2) {
+    return;
+  }
+
+  usbDeviceTxData[usbDeviceTxCount++] = b;
+  if (usbDeviceTxCount >= (usbDeviceTxNeeded - 1)) {
+    usbDeviceWriteMidiRaw(
+      usbDeviceTxStatus,
+      usbDeviceTxData[0],
+      usbDeviceTxNeeded > 2 ? usbDeviceTxData[1] : 0,
+      usbDeviceTxNeeded
+    );
+    usbDeviceTxCount = 0;
+  }
+}
+
+void serviceUsbMidi() {
+  uint8_t packet[4];
+  while (usb_midi.readPacket(packet)) {
+    uint8_t len = usbMidiCinPayloadSize(packet[0] & 0x0F);
+    for (uint8_t i = 0; i < len; i++) {
+      uint8_t b = packet[1 + i];
+      forwardMidiByteToGba(b);
+      if (USB_TO_DIN_THRU) {
+        Serial1.write(b);
+      }
     }
   }
 }
@@ -1884,7 +1993,7 @@ void serviceDinMidi() {
     uint8_t b = static_cast<uint8_t>(Serial1.read());
     forwardMidiByteToGba(b);
     if (DIN_TO_USB_THRU) {
-      usb_midi.write(b);
+      usbDeviceWriteMidiByte(b);
     }
   }
 }
