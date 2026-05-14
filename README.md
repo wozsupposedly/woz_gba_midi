@@ -15,13 +15,12 @@ Please preserve attribution to SpritesMods for the original GBA MIDI concept, pr
 ## Main Sketch
 
 - `GBA_Midi_RP2040_Woz.ino` is the current working RP2040 sketch.
-- It uploads the embedded GBA MIDI ROM over the GBA link port, then switches to MIDI forwarding after the ROM upload succeeds.
+- It uploads a small embedded GBA stage1 loader over the GBA link port, then streams the larger GBAMIDI2 runtime as stage2 before switching to MIDI forwarding.
 - Built-in USB enumerates as a USB MIDI device.
 - GPIO14/GPIO15 PIO USB MIDI host code is present but disabled by default because starting `USBHost.begin()` currently stops built-in USB-device MIDI after a few seconds.
-- Current working cable profiles:
-  - Profile A: `SC=GPIO2`, `SI=GPIO3`, `SD=GPIO4`
-  - Profile B: `SC=GPIO2`, `SI=GPIO3`, `SD=GPIO5`
-- The sketch tries Profile A first, then Profile B, and only enters MIDI mode after a full ROM upload succeeds.
+- Current GBAMIDI2 two-stage cable profile:
+  - `SC=GPIO2`, `SI=GPIO3`, `SD=GPIO5`, `SO=GPIO4`
+- The older GBA-cable stage profile is deprecated for now; the sketch only tries the GBAMIDI2 profile and only enters MIDI mode after the stage1 and stage2 uploads succeed.
 
 ## USB Host Wiring
 
